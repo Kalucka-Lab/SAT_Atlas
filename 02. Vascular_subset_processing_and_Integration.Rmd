@@ -1,0 +1,322 @@
+---
+title: "scAtlas Vascular subset"
+date: "`r format(Sys.time(),  '%d %B %Y')`"
+author: "Mohamed Hassan"
+output: 
+  html_notebook:
+    theme: cerulean
+    toc: true  
+    toc_depth: 3
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = T, results = "hide")
+require("knitr")
+setwd("/home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Subclustering5/")
+opts_knit$set(root.dir = "/home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Subclustering5/")
+```
+
+```{r random-seed-setting}
+set.seed(12345)
+```
+
+```{r loading-libraries, results='hide'}
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+```
+
+After QC, we decided not to include clusters 5-10, 5-14, 5-15 (low nCount), 5-17 (low nCount), 5-18, and 5-19 for not expressing endothelial cell marker genes.
+
+# 1. Reading the Big object
+```{r}
+Atlas_IntegratedObj <- readRDS("Atlas_IntegratedObj_annotated.RDS")
+Atlas_IntegratedObj
+```
+
+```{r, fig.height=10}
+DimPlot(Atlas_IntegratedObj, group.by = "Subcluster5", 
+        label = T, raster = F, repel = T) + NoLegend()
+```
+
+# 2. Subsetting the Vascular cells (Endothelial cells, pericytes, and VSMCs)
+```{r}
+selected_vascular_clusters <- c("3", "11", "6", "5_0", "5_1", 
+                                "5_2", "5_3", "5_4", "5_5", "5_6",
+                                "5_7", "5_8", "5_9", "5_11", "5_12", 
+                                "5_13", "5_16","5_20", "5_21")
+
+Idents(Atlas_IntegratedObj) <- Atlas_IntegratedObj$Subcluster5
+VascularObj <- subset(Atlas_IntegratedObj, 
+                      Subcluster5 %in% selected_vascular_clusters)
+VascularObj
+```
+
+
+```{r}
+UMAPPlot(VascularObj, label = T)
+```
+
+```{r}
+DefaultAssay(VascularObj) <- "RNA"
+```
+
+
+## Preprocessing the Vascular object
+```{r}
+VascularObj <- NormalizeData(VascularObj, normalization.method = "LogNormalize", 
+                             scale.factor = 10000)
+VascularObj <-  FindVariableFeatures(VascularObj, selection.method = "vst", nfeatures = 2000)
+VascularObj <-  ScaleData(VascularObj, vars.to.regress="nCount_RNA")
+VascularObj<-  RunPCA(VascularObj, ndims.print = 1:50)
+```
+
+
+```{r}
+ElbowPlot(VascularObj, ndims = 50)
+```
+
+
+```{r}
+### Determining the number of significant PCs
+pct <- VascularObj@reductions$pca@stdev / sum(VascularObj@reductions$pca@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct) -1] - pct[2:length(pct)]) > 0.05), decreasing = T)[1] + 1
+pcs = min(co1, co2)
+sig_pcs <- 1:pcs
+```
+
+
+```{r}
+VascularObj <- FindNeighbors(VascularObj, dims = sig_pcs)
+```
+
+```{r}
+VascularObj <- RunUMAP(VascularObj, dims = sig_pcs)
+UMAPPlot(VascularObj, group.by = "Study")
+UMAPPlot(VascularObj, group.by = "technology")
+```
+
+
+```{r}
+library(harmony)
+Vascular_IntegratedObj <- RunHarmony(object = VascularObj,
+                                     group.by.vars=c("samples","Study_chemistry"),
+                                     verbose = T, assay.use= "RNA",max.iter.harmony = 100)
+### Determining the number of significant PCs
+pct <- Vascular_IntegratedObj@reductions$harmony@stdev / sum(Vascular_IntegratedObj@reductions$harmony@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct) -1] - pct[2:length(pct)]) > 0.05), decreasing = T)[1] + 1
+pcs = min(co1, co2)
+harmony_sig_pcs <- 1:pcs
+
+Vascular_IntegratedObj <- RunUMAP(Vascular_IntegratedObj,
+                                  dims = c(1:30),
+                                  reduction = "harmony", verbose = T)
+```
+
+## Quality of the integration
+```{r}
+UMAPPlot(Vascular_IntegratedObj, group.by = "Study_chemistry") + NoLegend()
+```
+
+
+```{r}
+DimPlot(Vascular_IntegratedObj, group.by = "Study", pt.size = 0.1)
+UMAPPlot(Vascular_IntegratedObj, group.by = "Condition")
+
+```
+
+```{r}
+Vascular_IntegratedObj <- FindNeighbors(Vascular_IntegratedObj,
+                                        dims = c(1:30),
+                                        reduction = "harmony", verbose = T)
+```
+
+
+```{r}
+Vascular_IntegratedObj@meta.data <- Vascular_IntegratedObj@meta.data[, c(1:32)]
+```
+
+
+```{r, fig.width=12}
+res <- seq(0.1, 1, 0.1)
+Vascular_IntegratedObj <- FindClusters(Vascular_IntegratedObj,resolution = res)
+library(clustree)
+clustree(Vascular_IntegratedObj)
+```
+
+
+```{r, fig.width=14, fig.height=10}
+DimPlot(Vascular_IntegratedObj, 
+        group.by = colnames(Vascular_IntegratedObj@meta.data)[grep(pattern = "^RNA_snn_res", 
+                                                                  x = colnames(Vascular_IntegratedObj@meta.data))], label = T, repel = T) & NoLegend()
+```
+
+
+
+```{r, fig.width=12, fig.height=12}
+FeaturePlot(Vascular_IntegratedObj, 
+            features = c("PECAM1", "CDH5", "MRC1", "PDGFRA", 
+                         "THEMIS", "SKAP1", "PLVAP", "CD74", "IFI27"), 
+            order = T, pt.size = 0.1)
+```
+
+
+
+
+## Signature plots
+```{r}
+ECs_markers_ref <- xlsx::read.xlsx("/home/lucamannino/Downloads/Vascular_markers_summary.xlsx", sheetIndex = 1)
+ECs_markers_ref <- separate(ECs_markers_ref, col = "Capillary.ECs", 
+                            into = c("Capillary.ECs", NA), sep = " ")
+
+ECs_markers_ref <- lapply(ECs_markers_ref, function(x){
+  x <- x[!(is.na(x))]
+})
+```
+
+
+## Assigning signatures
+```{r}
+for (cell_type in names(ECs_markers_ref)) {
+  
+  # Access gene list for the current cell type
+  current_gene_list <- ECs_markers_ref[[cell_type]]
+  
+  # Run AddModuleScore function on the Seurat object for the current cell type's gene list
+  Vascular_IntegratedObj <- AddModuleScore(object = Vascular_IntegratedObj,
+                               features = list(current_gene_list),
+                               name = str_c(cell_type, "signature", sep = "_"),
+                               search = T)
+}
+```
+
+
+```{r}
+colnames(Vascular_IntegratedObj@meta.data) <- gsub(pattern = "_signature1$", 
+                                                   replacement = "_signature", 
+                                                   x=colnames(Vascular_IntegratedObj@meta.data))
+```
+
+```{r}
+pal <- viridis::viridis(n = 10, option = "C", direction = -1)
+```
+
+
+## Plotting signatures
+```{r, fig.width=14, fig.height=14}
+signature_columns <- colnames(Vascular_IntegratedObj@meta.data[grep(pattern = "_signature$",
+                                                                   x = colnames(Vascular_IntegratedObj@meta.data))])
+
+FeaturePlot(Vascular_IntegratedObj, 
+         features = signature_columns,
+         cols = pal, ncol = 3)
+```
+
+
+```{r}
+DimPlot(Vascular_IntegratedObj, label = T, group.by = "RNA_snn_res.0.7", repel = T)
+```
+
+
+
+```{r}
+DefaultAssay(Vascular_IntegratedObj) <- "RNA"
+Idents(Vascular_IntegratedObj) <- Vascular_IntegratedObj$RNA_snn_res.0.7
+
+Vascular_markers <- FindAllMarkers(Vascular_IntegratedObj,
+                              only.pos = T,
+                              min.pct = 0.15, 
+                              logfc.threshold = 0.3)
+
+top50 <- Vascular_markers %>% group_by(cluster) %>% slice_max(n = 50, order_by = avg_log2FC)
+top100 <- Vascular_markers %>% group_by(cluster) %>% slice_max(n = 100, order_by = avg_log2FC)
+
+
+writexl::write_xlsx(as.data.frame(Vascular_markers), "../Markers/markers_VascularIntegratedObj_dims30_WRST_15PCT_Log03_res07_cluster5_subclustered.xlsx")
+```
+
+
+## Annotation
+
+```{r}
+new_names = c(
+  '0'='Venous Endothelial cells 1', 
+  '1'='Capillary Endothelial cells 1', 
+  '2'='Arterial Endothelial cells', 
+  '3'='SubEndothelial cells', 
+  '4' = 'Venous Endothelial cells 1',
+  '5'='VSMCs',
+  '6'='Pericytes',
+  '7'= 'SubEndothelial cells',
+  '8' = 'Venous Endothelial cells 2',
+  '9' = 'Pericytes',
+  '10' = 'Capillary Endothelial cells 2',
+  '11' = 'SubEndothelial cells',
+  '12' = 'SubEndothelial cells',
+  '13' = 'Capillary Endothelial cells 2',
+  '14' = 'SubEndothelial cells',
+  '15' = 'Lymphatic Endothelial cells',
+  '16' = 'Venous Endothelial cells 3',
+  '17' = 'Capillary Endothelial cells 1',
+  '18' = 'SubEndothelial cells',
+  '19' = 'Capillary Endothelial cells 1',
+  '20' = 'SubEndothelial cells',
+  '21' = 'Capillary Endothelial cells 1',
+  '22' = 'SubEndothelial cells',
+  '23' = 'Capillary Endothelial cells 1')
+
+Idents(Vascular_IntegratedObj) <- Vascular_IntegratedObj$RNA_snn_res.0.7
+
+Vascular_IntegratedObj$Vascular_labels <- recode(Idents(Vascular_IntegratedObj),
+                                                 !!!new_names)
+
+```
+
+
+```{r, fig.height = 9}
+DimPlot(Vascular_IntegratedObj, 
+        group.by = "Vascular_labels", label = T, repel = T) + NoLegend()
+```
+
+
+
+```{r}
+DefaultAssay(Vascular_IntegratedObj) <- "RNA"
+Idents(Vascular_IntegratedObj) <- Vascular_IntegratedObj$Vascular_labels
+
+Vascular_markers <- FindAllMarkers(Vascular_IntegratedObj,
+                              only.pos = T,
+                              min.pct = 0.15, 
+                              logfc.threshold = 0.3)
+
+top50 <- Vascular_markers %>% group_by(cluster) %>% slice_max(n = 50, order_by = avg_log2FC)
+top100 <- Vascular_markers %>% group_by(cluster) %>% slice_max(n = 100, order_by = avg_log2FC)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

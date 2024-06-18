@@ -1,0 +1,215 @@
+---
+title: "Differential Expression Analysis - Vascular cells"
+date: "`r format(Sys.time(),  '%d %B %Y')`"
+author: "Mohamed Hassan"
+output: 
+  html_notebook:
+    theme: cerulean
+    toc: true  
+    toc_depth: 3
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+
+```{r}
+library(Seurat)
+library(dplyr)
+```
+
+```{r}
+Vascular_IntegratedObj <- readRDS("/home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Vascular_IntegratedObj_annotated.RDS")
+Vascular_IntegratedObj
+```
+
+```{r}
+DimPlot(Vascular_IntegratedObj, group.by = "Vascular_labels")
+```
+
+
+
+```{r}
+Vascular_IntegratedObj$Vascular_labels <- factor(Vascular_IntegratedObj$Vascular_labels, 
+                                                 levels = c("Venous Endothelial cells 1", 
+                                                            "Venous Endothelial cells 2", 
+                                                            "Venous Endothelial cells 3", 
+                                                            "Capillary Endothelial cells 1",
+                                                            "Capillary Endothelial cells 2",
+                                                            "Arterial Endothelial cells", 
+                                                            "SubEndothelial cells", 
+                                                            "Lymphatic Endothelial cells", 
+                                                            "Pericytes", "VSMCs"))
+```
+
+
+```{r}
+DefaultAssay(Vascular_IntegratedObj) <-"RNA"
+Idents(Vascular_IntegratedObj) <- Vascular_IntegratedObj$Condition
+
+Vascular_Clusters <- SplitObject(Vascular_IntegratedObj, split.by = "Vascular_labels")
+```
+
+
+```{r}
+Vascular_Clusters <- lapply(Vascular_Clusters, function(x){
+  DefaultAssay(x) <- "RNA"
+  x <- NormalizeData(x) %>% ScaleData()
+})
+```
+
+
+## Lean vs Obese
+```{r}
+Vascular_Clusters_DEG_HO_vs_L <- lapply(Vascular_Clusters,function(x)
+  {FindMarkers(x,
+               ident.1 = "Obese", 
+               ident.2 = "Lean",
+               latent.vars = c("gender","Study_chemistry"),
+               test.use = "LR",
+               assay = "RNA", 
+               slot = "scale.data")})
+```
+
+## Obese vs Diabetic Obese
+```{r}
+Vascular_Clusters_DEG_DO_vs_HO <- lapply(Vascular_Clusters,function(x)
+  {FindMarkers(x, 
+               ident.1 = "Diabetic Obese",
+               ident.2 = "Obese",
+               latent.vars = c("gender","Study_chemistry"),
+               test.use = "LR",
+               assay = "RNA", 
+               slot = "scale.data") })
+```
+
+## Lean vs Diabetic Obese
+```{r}
+Vascular_Clusters_DEG_DO_vs_L <- lapply(Vascular_Clusters,function(x)
+  {FindMarkers(x,
+               ident.1 = "Diabetic Obese",
+               ident.2 = "Lean",
+               latent.vars = c("gender","Study_chemistry"),
+               test.use = "LR",
+               assay = "RNA", 
+               slot = "scale.data")})
+```
+
+
+```{r}
+# Define the function you want to apply to each dataframe
+Prepare4_GO <- function(df) {
+  df$gene_name <- rownames(df)
+  df <- df %>% filter(p_val_adj < 0.05)
+  df <- mutate(df, FoldChange <- 2^avg_diff) 
+  # df <- df %>% filter(avg_log2FC > 0.5)
+  df$DE <- ifelse(df$FoldChange > 1, 1, -1)
+  df$DE_status <- df$DE
+  df$DE_status[grepl(pattern = "1", x = df$DE)] <- "UP"
+  df$DE_status[grepl(pattern = "-1", x = df$DE)] <- "DOWN"
+  colnames(df)[7] <- "FoldChange"
+  
+  return(df)
+}
+
+# Apply the function over the list of dataframes and update the list in place
+Vascular_Clusters_DEG_HO_vs_L <- lapply(Vascular_Clusters_DEG_HO_vs_L, Prepare4_GO)
+Vascular_Clusters_DEG_DO_vs_L <- lapply(Vascular_Clusters_DEG_DO_vs_L, Prepare4_GO)
+Vascular_Clusters_DEG_DO_vs_HO <- lapply(Vascular_Clusters_DEG_DO_vs_HO, Prepare4_GO)
+```
+
+
+
+# Volcano plots
+```{r}
+library(EnhancedVolcano)
+
+VOLCANO_Plot <- function(resOrderedDF, units = "in", height = 16, width = 16,
+                         filename, dpi = 600, 
+                         cols = c("UP" = "firebrick3", "DOWN" = "steelblue", "ns" = "grey"),
+                         ylim = c("",""),
+                         xlim = c(-2.5,2.5)){
+vp1 <- EnhancedVolcano(resOrderedDF,
+lab = rownames(resOrderedDF),
+x = 'avg_diff',
+y = 'p_val_adj', pCutoff = 0.05, FCcutoff = 0.5)
+print(vp1)
+ggsave(filename, units = units, height = height, width = width, dpi = dpi)
+return(vp1)
+}
+```
+
+## Volcano plots Obese vs Lean
+```{r}
+count <- 0
+for (x in Vascular_Clusters_DEG_HO_vs_L) {
+  count <- count + 1
+  
+  VOLCANO_Plot(x ,
+               filename=paste("/home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Analysis/DEA/VolcanoPlots/HO_vs_L/",
+                              names(Vascular_Clusters_DEG_HO_vs_L[count]),".png",sep=""))
+}
+```
+
+
+## Volcano plots Obese vs Diabetic Obese
+```{r}
+count <- 0
+for (x in Vascular_Clusters_DEG_DO_vs_HO) {
+  count <- count + 1
+  
+  VOLCANO_Plot(x ,
+               filename=paste("/home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Analysis/DEA/VolcanoPlots/DO_vs_HO/",
+                              names(Vascular_Clusters_DEG_DO_vs_HO[count]),".png",sep="" ))
+}
+```
+
+## Volcano plots Diabetic Obese vs Lean
+```{r}
+count <- 0
+for (x in Vascular_Clusters_DEG_DO_vs_L) {
+  count <- count +1
+  
+  VOLCANO_Plot(x ,
+               filename=paste("//home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Analysis/DEA/VolcanoPlots/DO_vs_L/",
+                              names(Vascular_Clusters_DEG_DO_vs_L[count]),".png",sep="" ))
+}
+```
+
+
+
+
+```{r}
+##################
+## Obese vs Lean
+##################
+
+for (i in names(Vascular_Clusters_DEG_HO_vs_L)) {
+  file_name <- paste0("/home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Analysis/DEA/DEGs/HO_vs_L/DEGs_", i, ".csv")  
+  write.csv(Vascular_Clusters_DEG_HO_vs_L[[i]], 
+            file = file_name, row.names = FALSE)
+}
+
+
+############################
+## Diabetic Obese vs Lean
+############################
+
+for (i in names(Vascular_Clusters_DEG_DO_vs_L)) {
+  file_name <- paste0("/home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Analysis/DEA/DEGs/DO_vs_L/DEGs_", i, ".csv")  
+  write.csv(Vascular_Clusters_DEG_DO_vs_L[[i]], 
+            file = file_name, row.names = FALSE)
+}
+
+
+#############################
+## Diabetic Obese vs Obese
+#############################
+
+for (i in names(Vascular_Clusters_DEG_DO_vs_HO)) {
+  file_name <- paste0("/home/lucamannino/R_Projects/scAtlas/Analysis/Vascular/Analysis/DEA/DEGs/DO_vs_HO/DEGs_", i, ".csv")  
+  write.csv(Vascular_Clusters_DEG_DO_vs_HO[[i]], 
+            file = file_name, row.names = FALSE)
+}
+```
+
