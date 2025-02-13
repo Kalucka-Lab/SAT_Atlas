@@ -9,5 +9,5 @@ Adipose tissue physiology and homeostasis depends on a healthy vascular network.
 This repository contains both R and python scripts used to reproduce the results of our current study performed on subcutaneous adipose tissue samples. 
 
 ## Contact
-Please contact Mohamed N. Hassan at mo.hassan[AT]biomed.au.dk for any questions with regard to data analysis.
-Corresponding authors: Joanna Kalcuka (joanna.kalucka[AT]biomed.au.dk)
+Please contact Mohamed N. Hassan at mo.hassan@biomed.au.dk for any questions with regard to data analysis.
+Corresponding authors: Joanna Kalcuka (joanna.kalucka@biomed.au.dk)
