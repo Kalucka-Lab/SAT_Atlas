@@ -1,0 +1,453 @@
+---
+title: "Pseudotime with Monocle3"
+date: "`r format(Sys.time(),  '%d %B %Y')`"
+author: "Mohamed Hassan"
+output: 
+  html_notebook:
+    theme: cerulean
+    toc: true  
+    toc_depth: 3
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+library(Seurat)
+library(monocle3)
+library(tidyverse)
+library(harmony)
+```
+
+```{r}
+set.seed(12345)
+```
+
+```{r}
+Vascular_IntegratedObj <- readRDS("/home/lucamannino//R_Projects/scAtlas/Analysis/Vascular/Objects/Vascular_IntegratedObj_label_transferred_from_Activated_updated_names.RDS")
+Vascular_IntegratedObj
+```
+
+```{r}
+DimPlot(Vascular_IntegratedObj, group.by = "transferred_labels_from_Act")
+```
+
+
+
+```{r}
+Vascular_IntegratedObj <- subset(Vascular_IntegratedObj, 
+                                 transferred_labels_from_Act %in% c("Activated Vascular Endothelial cells", 
+                                                            "Capillary Endothelial cells 1", 
+                                                            "Capillary Endothelial cells 2",
+                                                            "Venous Endothelial cells 3", 
+                                                            "FAP-like Endothelial cells", 
+                                                            "Adipocyte-like Endothelial cells"))
+Vascular_IntegratedObj
+```
+
+```{r}
+Vascular_IntegratedObj %>% DimPlot(group.by = "transferred_labels_from_Act")
+```
+
+
+
+```{r}
+Vascular_IntegratedObj <- Vascular_IntegratedObj %>% NormalizeData() %>% FindVariableFeatures() %>% ScaleData(features = rownames(Vascular_IntegratedObj)) %>% RunPCA()
+```
+
+
+```{r}
+ElbowPlot(Vascular_IntegratedObj, ndims = 50)
+
+### Determining the number of significant PCs
+pct <- Vascular_IntegratedObj@reductions$pca@stdev / sum(Vascular_IntegratedObj@reductions$pca@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct) -1] - pct[2:length(pct)]) > 0.05), decreasing = T)[1] + 1
+pcs = min(co1, co2)
+sig_pcs <- 1:pcs
+```
+
+
+```{r}
+Vascular_IntegratedObj <-  Vascular_IntegratedObj %>% FindNeighbors(dims = c(sig_pcs)) %>% FindClusters(resolution = 0.1) %>% RunUMAP(dims = c(sig_pcs))
+```
+
+
+```{r}
+UMAPPlot(Vascular_IntegratedObj, group.by = c("seurat_clusters", "samples")) & NoLegend()
+```
+
+
+```{r, fig.width=20, fig.height=7}
+UMAPPlot(Vascular_IntegratedObj, group.by = c("Study_chemistry", "technology"))
+```
+
+
+### Removing batch effect with harmony
+```{r}
+Vascular_IntegratedObj <- Vascular_IntegratedObj %>% RunHarmony(group.by.vars = c("samples", "Study_chemistry"), max.iter.harmony = 100)
+
+
+ElbowPlot(Vascular_IntegratedObj, reduction =  "pca", ndims = 50) +  ElbowPlot(Vascular_IntegratedObj, reduction =  "harmony", ndims = 50)
+
+
+### Determining the number of significant PCs
+pct <- Vascular_IntegratedObj@reductions$harmony@stdev / sum(Vascular_IntegratedObj@reductions$harmony@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct) -1] - pct[2:length(pct)]) > 0.05), decreasing = T)[1] + 1
+pcs = min(co1, co2)
+harmony_sig_pcs <- 1:pcs
+```
+
+```{r}
+Vascular_IntegratedObj <- RunUMAP(Vascular_IntegratedObj, reduction = "harmony", dims = harmony_sig_pcs)
+UMAPPlot(Vascular_IntegratedObj, group.by = "samples") + NoLegend()
+UMAPPlot(Vascular_IntegratedObj, group.by = "transferred_labels_from_Act", label = T, repel = T) 
+UMAPPlot(Vascular_IntegratedObj, group.by = "technology") 
+```
+
+
+
+```{r}
+library(SeuratWrappers)
+cds <- as.cell_data_set(Vascular_IntegratedObj)
+cds <- cluster_cells(cds)
+```
+
+```{r}
+p1 <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = FALSE, label_cell_groups = T, group_label_size = 8)
+p2 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE, label_cell_groups = T)
+patchwork::wrap_plots(p1, p2)
+```
+
+
+```{r}
+UMAPPlot(Vascular_IntegratedObj, label = F, group.by = "transferred_labels_from_Act")
+```
+
+
+
+```{r}
+cds <- learn_graph(cds, use_partition = F, verbose = T)
+```
+
+
+```{r}
+plotted_cells <- plot_cells(cds,
+           color_cells_by = "cluster",
+           label_groups_by_cluster=F,
+           label_leaves=F,
+           label_branch_points=F, 
+           trajectory_graph_color = "red4",
+           label_roots = F)
+plotted_cells
+```
+
+```{r}
+cds <- order_cells(cds, root_cells = colnames(cds[,clusters(cds) == 2]))
+```
+
+
+```{r, message=FALSE}
+selected_pal <- viridis::viridis(n = max(integrated.sub$monocle3_pseudotime), 
+                                 option = "D", 
+                                 direction = 1)
+pdf("Trajectory_plot_NoAxes_NoLegend.pdf", width = 10, height = 10)
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "cluster",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE, trajectory_graph_color = "black") + 
+  scale_color_gradientn(colours = selected_pal) + NoAxes() + NoLegend()
+dev.off()
+```
+
+
+```{r}
+plot_cells(cds,
+           color_cells_by = "transferred_labels_from_Act",
+           group_cells_by = "cluster",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE, trajectory_graph_color = "black") & 
+  scale_color_manual(values = c("#335D6F", "#D0B79D", "#9F8255", "brown", "coral4", "lightseagreen")) & 
+  NoLegend() & 
+  NoAxes()
+```
+
+
+```{r}
+integrated.sub <- as.Seurat(cds, assay = NULL)
+FeaturePlot(integrated.sub, "monocle3_pseudotime")
+```
+
+
+```{r}
+pdf("Pseudotime_boxplot_updated_colors.pdf", width = 10, height = 10)
+ggplot(integrated.sub@meta.data, aes(x = monocle3_pseudotime, y = transferred_labels_from_Act, fill = transferred_labels_from_Act)) + geom_boxplot(outlier.shape = 1, outlier.alpha = 0.2) + scale_fill_manual(values = mapped_colors)+ ylab("") + theme(element_blank()) + theme_classic() # +  NoLegend() + NoAxes()
+dev.off()
+```
+
+
+
+```{r, results='hide'}
+cds_graph_test_results <- graph_test(cds,
+                                     neighbor_graph = "principal_graph",
+                                     cores = 8)
+```
+
+
+```{r}
+rowData(cds)$gene_short_name <- row.names(rowData(cds))
+head(cds_graph_test_results, error=FALSE, message=FALSE, warning=FALSE)
+deg_ids <- rownames(subset(cds_graph_test_results[order(cds_graph_test_results$morans_I, 
+                                                        decreasing = TRUE),], q_value < 0.05))
+
+```
+
+
+```{r}
+top_genes <- subset(cds_graph_test_results[order(cds_graph_test_results$morans_I, 
+                                                        decreasing = TRUE),], q_value < 0.05)
+top_genes
+```
+
+```{r}
+cds_subset <- cds[rownames(topTF)[1],]
+
+cds_subset <- mycds[rownames(topTF)[1],]
+```
+
+
+## Top Genes that change across pseudotime
+```{r, fig.width=6, fig.height=6}
+plot_genes_in_pseudotime(cds_subset = cds_subset, 
+                         color_cells_by = "transferred_labels_from_Act")
+```
+
+```{r}
+pdf("Plot_top30_genes_in_pseudotime.pdf", width = 4, height = 30)
+plot_genes_in_pseudotime(cds_subset = cds_subset)
+dev.off()
+```
+
+
+
+```{r, fig.width=12, fig.height=12}
+genes_change <- plot_cells(cds,
+           genes=head(deg_ids, 5),
+           show_trajectory_graph = T,
+           label_cell_groups = F,
+           label_leaves = F, trajectory_graph_color = "red4", label_roots = F)
+genes_change
+```
+
+
+
+```{r}
+cells_ids <- cds@colData@rownames
+clusters <- cds@colData@listData[["transferred_labels_from_Act"]] %>% as.character()
+celldf <- cbind(cells_ids, clusters) %>% as.data.frame()
+cds_agg_exp <- aggregate_gene_expression(cds = cds, cell_group_df = celldf)
+genes2keep <- rownames(top_genes)
+cds_agg_exp <- cds_agg_exp %>% as.data.frame()
+cds_agg_exp$gene <- rownames(cds_agg_exp)
+cds_agg_exp <- cds_agg_exp %>% select(gene, 
+                                      `Activated Vascular Endothelial cells`, 
+                                      `Adipocyte-like Endothelial cells`, 
+                                      `Capillary Endothelial cells 1`, 
+                                      `Capillary Endothelial cells 2`, 
+                                      `FAP-like Endothelial cells`, 
+                                      `Venous Endothelial cells 3`)
+cds_agg_exp_filtered <- cds_agg_exp %>% filter(gene %in% genes2keep)
+# cds_agg_exp_filtered <- cds_agg_exp_filtered[,c(2:7)]
+```
+
+
+```{r}
+pheatmap::pheatmap(cds_agg_exp_filtered)
+```
+
+
+```{r}
+top100 <- top_genes %>% head(100) %>% rownames()
+```
+
+
+```{r}
+integrated.sub$transferred_labels_from_Act %>% factor() %>% levels()
+```
+
+```{r}
+cluster_colors <- c("pink3", "pink4", "slateblue4", "brown", "coral4", "lightseagreen")
+
+
+mapped_colors <- c("Capillary Endothelial cells 1" = "#D0B79D",
+                   "Capillary Endothelial cells 2" = "#9F8255", 
+                   "Venous Endothelial cells 3" = "#335D6F", 
+                   "Activated Vascular Endothelial cells" = "brown", 
+                   "FAP-like Endothelial cells" = "coral4", 
+                   "Adipocyte-like Endothelial cells" = "lightseagreen")
+```
+
+
+
+```{r}
+selected_genes <- selected_genes %>% filter(Filter == "1")
+```
+
+
+## Scale the selected genes
+```{r}
+integrated.sub <- ScaleData(integrated.sub, features = selected_genes$gene)
+```
+
+
+```{r}
+library(dittoSeq)
+pdf("/home/lucamannino/R_Projects/scAtlas/Analysis/ActivatedECs/Analysis/Pseudotime/Scenario5/DittoHeatmap_selcted303_genes_change_pseudotime.pdf", width = 15, height = 15)
+dittoHeatmap(object = integrated.sub, genes = selected_genes$gene, 
+             annot.by = c("monocle3_pseudotime", "transferred_labels_from_Act"),
+             order.by = "monocle3_pseudotime", slot = "scale.data", scaled.to.max = T, 
+             annot.colors = cluster_colors)
+dev.off()
+```
+
+## Plotting TFs that change across pseudotime
+```{r}
+qplot(integrated.sub$monocle3_pseudotime, 
+      as.numeric(integrated.sub@assays$RNA@data["ZEB2", ]),
+      xlab = "ZEB2", ylab = "Expression", main = "ZEB2") + geom_smooth(se = F, method = "loess") + theme_bw()
+```
+
+
+
+```{r}
+Seurat_pseudotimeObj$transferred_labels_from_Act <- Seurat_pseudotimeObj$transferred_labels_from_Act %>%
+  droplevels()
+```
+
+
+```{r}
+Seurat_pseudotimeObj$transferred_labels_from_Act <- factor(Seurat_pseudotimeObj$transferred_labels_from_Act,
+                                                           levels = c("Capillary Endothelial cells 1", 
+                                                                      "Capillary Endothelial cells 2", 
+                                                                      "Venous Endothelial cells 3", 
+                                                                      "Activated Vascular Endothelial cells", 
+                                                                      "FAP-like Endothelial cells", 
+                                                                      "Adipocyte-like Endothelial cells"))
+```
+
+
+```{r}
+ggplot(Seurat_pseudotimeObj@meta.data, 
+       aes(x = monocle3_pseudotime, 
+           y = as.numeric(Seurat_pseudotimeObj[["RNA"]]@data["ZEB2",]),
+           color = transferred_labels_from_Act)) +
+  xlab("Pseudotime") + ylab("Expression") + ggtitle("ZEB2") + 
+  geom_point() +
+  geom_smooth(se = F, method = "loess") + 
+  theme_classic() + 
+  NoLegend() + scale_color_manual(values = mapped_colors)
+```
+
+
+```{r}
+plot_genes_pseudo <- function(seu, gene){
+  ggplot(seu@meta.data, 
+       aes(x = monocle3_pseudotime, 
+           y = as.numeric(seu[["RNA"]]@data[as.character(gene),]),
+           color = transferred_labels_from_Act)) +
+  xlab("Pseudotime") + ylab("Expression") + ggtitle(as.character(gene)) + 
+    geom_point(color = "black", size = 2) + # Add border
+    geom_point(size = 1)  +
+    geom_smooth(se = F, method = "loess") + 
+    theme_classic() + 
+    NoLegend() + scale_color_manual(values = mapped_colors)
+}
+```
+
+```{r, message=FALSE}
+for (gene in TFs2plot) {
+  plot_obj <- plot_genes_pseudo(Seurat_pseudotimeObj, gene)
+  print(plot_obj)
+}
+```
+
+
+```{r}
+pdf("TFs_across_pseudotime_updated_colors_wOutline.pdf", width = 10, height = 10)
+for (gene in TFs2plot) {
+  plot_obj <- plot_genes_pseudo(Seurat_pseudotimeObj, gene)
+  print(plot_obj)
+}
+dev.off()
+```
+
+
+```{r}
+TFs <- c("ZEB2", "PPARG", "ERG", "RBPJ")
+
+pdf("TFs_across_pseudotime_updated_colors_wOutline.pdf", width = 10, height = 10)
+for (gene in TFs) {
+  plot_obj <- plot_genes_pseudo(Seurat_pseudotimeObj, gene)
+  print(plot_obj)
+}
+dev.off()
+```
+
+
+## Selected genes for heatmap
+```{r}
+selected_genes <- readxl::read_xlsx("/home/lucamannino/Downloads/aggregarted_geneexp_top_genes (1).xlsx")
+selected_genes <- selected_genes %>% filter(Filter == "1")
+selected_genes$Filter <- NULL
+selected_genes_df <- selected_genes %>% as.data.frame()
+```
+
+```{r}
+rownames(selected_genes_df) <- selected_genes_df$gene
+selected_genes_df$gene <- NULL
+```
+
+```{r}
+pheatmap::pheatmap(as.data.frame(selected_genes_df))
+```
+```{r}
+pheatmap::pheatmap(as.data.frame(selected_genes_df), cluster_cols = F)
+```
+```{r}
+pheatmap::pheatmap(as.data.frame(selected_genes_df), cluster_cols = F, cluster_rows = F)
+```
+
+
+## Arranged matrix
+```{r}
+selected_gene_arranged <- readxl::read_xlsx("/home/lucamannino/Downloads/Selected_gene_arranged.xlsx") %>% as.data.frame()
+rownames(selected_gene_arranged) <- selected_gene_arranged$gene
+selected_gene_arranged$gene <- NULL
+```
+
+
+
+```{r, fig.height=10, fig.width=10}
+ComplexHeatmap::Heatmap(as.data.frame(selected_gene_arranged), cluster_rows = F, cluster_columns = F)
+```
+
+## Exporting heatmap
+```{r}
+pdf("Heatmap_top300_NoLegend.pdf", width = 10, height = 10)
+ComplexHeatmap::Heatmap(as.matrix(selected_gene_arranged), 
+                        cluster_rows = F, cluster_columns = F, 
+                        col = c("darkblue", "bisque", "red4"), 
+                        show_heatmap_legend = F, 
+                        row_names_gp = grid::gpar(fontsize = 2.4))
+dev.off()
+```
