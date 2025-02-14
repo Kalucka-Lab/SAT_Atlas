@@ -1,0 +1,199 @@
+---
+title: "scAtlas SubEndothelial cells subset"
+date: "`r format(Sys.time(),  '%d %B %Y')`"
+author: "Mohamed Hassan"
+output: 
+  html_notebook:
+    theme: cerulean
+    toc: true
+    toc_depth: 3
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = T, results = "hide")
+require("knitr")
+setwd("/home/lucamannino/R_Projects/scAtlas/Analysis/SubECs/")
+opts_knit$set(root.dir = "/home/lucamannino/R_Projects/scAtlas/Analysis/SubECs/")
+```
+
+```{r random-seed-setting}
+set.seed(12345)
+```
+
+```{r loading-libraries, results='hide'}
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+```
+
+
+# 1. Reading the Vascular object
+```{r}
+Vascular_IntegratedObj <- readRDS("Vascular_IntegratedObj_annotated.RDS")
+Vascular_IntegratedObj
+```
+
+# 2. Subsetting the SubECs cells
+```{r}
+Idents(Vascular_IntegratedObj) <- Vascular_IntegratedObj$RNA_snn_res.0.7
+
+SubECs_Obj <- subset(Vascular_IntegratedObj, 
+                      RNA_snn_res.0.7 %in% 
+                        c("3", "7", "11", "12", 
+                          "14", "18", "20", "22"))
+SubECs_Obj
+```
+
+
+```{r}
+UMAPPlot(SubECs_Obj, label = T)
+```
+
+```{r}
+DefaultAssay(SubECs_Obj)<- "RNA"
+```
+
+
+## Preprocessing the Vascular object
+```{r}
+SubECs_Obj <- NormalizeData(SubECs_Obj, normalization.method = "LogNormalize", 
+                             scale.factor = 10000)
+SubECs_Obj <-  FindVariableFeatures(SubECs_Obj, selection.method = "vst", nfeatures = 2000)
+SubECs_Obj <-  ScaleData(SubECs_Obj, vars.to.regress="nCount_RNA")
+SubECs_Obj<-  RunPCA(SubECs_Obj, ndims.print = 1:50)
+```
+
+
+```{r}
+ElbowPlot(SubECs_Obj, ndims = 50)
+```
+
+
+```{r}
+### Determining the number of significant PCs
+pct <- SubECs_Obj@reductions$pca@stdev / sum(SubECs_Obj@reductions$pca@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct) -1] - pct[2:length(pct)]) > 0.05), decreasing = T)[1] + 1
+pcs = min(co1, co2)
+sig_pcs <- 1:pcs
+```
+
+
+```{r}
+SubECs_Obj <- FindNeighbors(SubECs_Obj, dims = sig_pcs)
+```
+
+```{r}
+SubECs_Obj <- RunUMAP(SubECs_Obj, dims = sig_pcs)
+UMAPPlot(SubECs_Obj, group.by = "Study")
+UMAPPlot(SubECs_Obj, group.by = "technology")
+```
+
+
+```{r}
+pdf("BatchEffect_SubECs_Obj.pdf")
+UMAPPlot(SubECs_Obj, group.by = "Study")
+UMAPPlot(SubECs_Obj, group.by = "technology")
+dev.off()
+```
+
+
+```{r, eval=FALSE}
+saveRDS(SubECs_Obj, "SubECs_Obj_Unintegrated.RDS")
+```
+
+
+```{r}
+library(harmony)
+SubECs_IntegratedObj <- RunHarmony(object = SubECs_Obj,
+                                     group.by.vars=c("samples","Study_chemistry"),
+                                     verbose = T, assay.use= "RNA",max.iter.harmony = 100)
+### Determining the number of significant PCs
+pct <- SubECs_IntegratedObj@reductions$harmony@stdev / sum(SubECs_IntegratedObj@reductions$harmony@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct) -1] - pct[2:length(pct)]) > 0.05), decreasing = T)[1] + 1
+pcs = min(co1, co2)
+harmony_sig_pcs <- 1:pcs
+
+
+
+```{r}
+SubECs_IntegratedObj <- RunUMAP(SubECs_IntegratedObj,
+                                  dims = c(1:15),
+                                  reduction = "harmony", verbose = T)
+```
+
+
+
+
+## Quality of the integration
+```{r}
+UMAPPlot(SubECs_IntegratedObj, group.by = "Study_chemistry") + NoLegend()
+```
+
+
+```{r}
+UMAPPlot(SubECs_IntegratedObj, group.by = "Study")
+UMAPPlot(SubECs_IntegratedObj, group.by = "Condition")
+```
+
+```{r}
+SubECs_IntegratedObj <- FindNeighbors(SubECs_IntegratedObj,
+                                        dims = c(1:15),
+                                        reduction = "harmony", verbose = T)
+```
+
+
+```{r, fig.width=12}
+res <- seq(0.1, 1, 0.1)
+SubECs_IntegratedObj <- FindClusters(SubECs_IntegratedObj,resolution = res)
+library(clustree)
+clustree(SubECs_IntegratedObj)
+
+```
+
+
+
+```{r, fig.width=20, fig.height=10}
+DimPlot(SubECs_IntegratedObj, 
+         group.by = grep(pattern = "^RNA_snn", 
+                         x = colnames(SubECs_IntegratedObj@meta.data)), 
+         label = T, ncol = 5) & NoLegend()
+```
+
+
+
+
+```{r}
+DefaultAssay(SubECs_IntegratedObj) <- "RNA"
+Idents(SubECs_IntegratedObj) <- SubECs_IntegratedObj$RNA_snn_res.0.2
+
+SubECs_markers <- FindAllMarkers(SubECs_IntegratedObj,
+                              only.pos = T,
+                              min.pct = 0.15, 
+                              logfc.threshold = 0.3)
+```
+
+
+## Annotation
+```{r}
+new_names = c(
+  '0'='FAP-like Endothelial cells', 
+  '1'='Adipocyte-like Endothelial cells', 
+  '2'='Activated Vascular Endothelial cells', 
+  '3'='Myeloid-like Endothelial cells 1', 
+  '4'='Lymphoid-like Endothelial cells',
+  '5'='Mesenchymal-like Endothelial cells',
+  '6'='Myeloid-like Endothelial cells 2',
+  '7'='FAP-like Endothelial cells')
+
+Idents(SubECs_IntegratedObj) <- SubECs_IntegratedObj$RNA_snn_res.0.2
+
+SubECs_IntegratedObj$SubECs_labels <- recode(Idents(SubECs_IntegratedObj),
+                                                 !!!new_names)
+```
