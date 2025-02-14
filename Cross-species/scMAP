@@ -1,0 +1,199 @@
+######################################################################
+## Title        : scmap updated orthologs from orthogenes
+##
+## Description  :
+##
+## Author       : "Mohamed Hassan"
+##
+## Date         : "`r format(Sys.time(),  '%d %B %Y')`"
+######################################################################
+##
+## Loading required libraries:########################################
+pacman::p_load(tidyverse, Seurat, patchwork, remotes, nichenetr, dplyr)
+
+
+## River plot human vs pig
+Human_vascular <- readRDS("/home/mhassan/R_Projects/scAtlas/Analysis/Vascular/Objects/Vascular_IntegratedObj_label_transferred_from_SubECs_updated_names.RDS")
+Vascular_Pig <- readRDS("/home/mhassan/R_Projects/scAtlas/Pig/Vascular_Pig_annotated_updated.RDS")
+
+# Human_vascular$annotation2 <- as.character(Human_vascular$annotation2)
+# Human_vascular$annotation2[grepl(pattern = "^Activated", Human_vascular$annotation2)] <- "Activated endothelial cells"
+
+query_object <- Vascular_Pig
+ref_object <- Human_vascular
+
+
+library(nichenetr)
+library(dplyr)
+ref_object <- as.SingleCellExperiment(ref_object, assay = "RNA")
+query_object <- as.SingleCellExperiment(query_object, assay = "RNA")
+
+shared_genes <- Reduce(intersect, list(rownames(query_object),rownames(ref_object)))
+
+
+library(SingleCellExperiment)
+library(scmap)
+rowData(query_object)$feature_symbol <- rownames(query_object)
+# remove features with duplicated names
+query_object <- query_object[!duplicated(rownames(query_object)), ]
+rowData(ref_object)$feature_symbol <- rownames(ref_object)
+# remove features with duplicated names
+ref_object <- ref_object[!duplicated(rownames(ref_object)), ]
+
+
+
+library_list_combined<-list("query"=query_object,
+                            "ref_1"=ref_object)
+
+
+library(scmap)
+library_list_combined[[1]]<-selectFeatures(library_list_combined[[1]],suppress_plot = F,n_features = 5000)
+library_list_combined[[1]] <- indexCluster(library_list_combined[[1]],cluster_col = "Vascular_labels")
+library_list_combined[[2]]<-selectFeatures(library_list_combined[[2]],suppress_plot = F,n_features = 5000)
+library_list_combined[[2]] <- indexCluster(library_list_combined[[2]],cluster_col = "Vascular_labels")
+
+
+#Select out the cluster index of each reference dataset
+scmap_cluster_ref_dataset_cluster_index<-lapply(library_list_combined[c("query")],FUN=function(x){metadata(x)$scmap_cluster_index})
+#Run scmapCluster, with threshold = 0.5
+#change the threshold accordigly
+scmapCluster_results_human_pig <- scmapCluster(
+  projection = library_list_combined[["ref_1"]],
+  index_list = scmap_cluster_ref_dataset_cluster_index,
+  threshold = 0.1
+)
+
+
+scmap_colors_human_pig <- c("navy",
+                            "#cd919e", 
+                            "#cd3333", 
+                            "darkgoldenrod", 
+                            "#ffa54f", 
+                            "#8b636c", 
+                            "#cd853f",
+                            "#6959cd", 
+                            "forestgreen", 
+                            "#473c8b")
+
+plot(
+  getSankey(
+    colData(ref_object)$Vascular_labels, 
+    scmapCluster_results_human_pig$scmap_cluster_labs,
+    colors = scmap_colors_human_pig,
+    plot_height = 400
+  )
+)
+webshot2::webshot(url = "R_Projects/scAtlas/scMAP/Sankey_Human_pig_colored.html",
+                  file = "/home/lucamannino/R_Projects/scAtlas/scMAP/Sankey_human_pig.pdf")
+
+###############################################################################################
+###############################################################################################
+
+## Mapping orthologs with babelgene
+###################
+## Mouse and human
+###################
+Human_vascular <- readRDS("R_Projects/scAtlas/Analysis/Vascular/Objects/Vascular_IntegratedObj_label_transferred_from_SubECs_updated_names.RDS")
+Mouse_Vascular_Integrated <- readRDS("R_Projects/scAtlas/Mouse/Emont_only/Emont_VascularObj_Integrated.RDS")
+
+query_object <- Mouse_Vascular_Integrated
+ref_object <- Human_vascular
+
+
+query_object$vascular_labels <- as.character(query_object$vascular_labels)
+query_object$vascular_labels <- gsub(pattern = "Activated Endothelial cells", 
+                                     replacement = "SubEndothelial cells", 
+                                     x = query_object$vascular_labels)
+
+## orthologs
+orth_mouse_human <- readxl::read_xlsx("R_Projects/Mouse_human_orthologs.xlsx")
+colnames(orth_mouse_human)[c(4,5)] <- c("mouse_gene", "human_gene")
+
+# Create a named vector for renaming genes
+gene_map <- setNames(orth_mouse_human$human_gene, orth_mouse_human$mouse_gene)
+
+# Get current gene names from the query dataset
+query_genes <- rownames(query_object)
+
+# Rename genes where a human ortholog exists, keep others unchanged
+new_gene_names <- ifelse(query_genes %in% names(gene_map), gene_map[query_genes], query_genes)
+
+# Extract the counts matrix
+counts_matrix <- GetAssayData(query_object, assay = "RNA", slot = "counts")
+
+# Rename rownames in the counts matrix
+rownames(counts_matrix) <- new_gene_names
+
+# Create a new Seurat object
+query_object_renamed <- CreateSeuratObject(counts = counts_matrix)
+
+# Transfer metadata from the old Seurat object
+query_object_renamed@meta.data <- query_object@meta.data
+
+
+ref_object <- as.SingleCellExperiment(ref_object, assay = "RNA")
+query_object <- as.SingleCellExperiment(query_object_renamed, assay = "RNA")
+
+shared_genes <- Reduce(intersect, 
+                       list(rownames(query_object),rownames(ref_object)))
+
+library(SingleCellExperiment)
+library(scmap)
+# rownames(query_object) <- toupper(rownames(query_object))
+rowData(query_object)$feature_symbol <- rownames(query_object)
+# remove features with duplicated names
+query_object <- query_object[!duplicated(rownames(query_object)), ]
+rowData(ref_object)$feature_symbol <- rownames(ref_object)
+# remove features with duplicated names
+ref_object <- ref_object[!duplicated(rownames(ref_object)), ]
+
+library_list_combined<-list("query"=query_object,
+                            "ref_1"=ref_object)
+
+library(scmap)
+library_list_combined[[1]]<-selectFeatures(library_list_combined[[1]],suppress_plot = F,n_features = 5000)
+library_list_combined[[1]] <- indexCluster(library_list_combined[[1]],cluster_col = "vascular_labels")
+library_list_combined[[2]]<-selectFeatures(library_list_combined[[2]],suppress_plot = F,n_features = 5000)
+library_list_combined[[2]] <- indexCluster(library_list_combined[[2]],cluster_col = "Vascular_labels")
+
+# Select out the cluster index of each reference dataset
+scmap_cluster_ref_dataset_cluster_index <- lapply(library_list_combined[c("query")],
+                                                  FUN=function(x){metadata(x)$scmap_cluster_index})
+
+#Run scmapCluster, with threshold = 0.1
+#change the threshold accordigly
+scmapCluster_results_human_mouse <- scmapCluster(
+  projection = library_list_combined[["ref_1"]],
+  index_list = scmap_cluster_ref_dataset_cluster_index,
+  threshold = 0.1
+)
+
+scmap_colors_human_mouse <- c("#8b6508",
+                              "navy",
+                              "#eea9b8",
+                              "#cd3333",
+                              "#ffa54f",
+                              "#cd853f",
+                              "#8b636c",
+                              "#0000cd",
+                              "#00008b",
+                              "forestgreen")
+
+plot(
+  getSankey(
+    colData(ref_object)$Vascular_labels, 
+    scmapCluster_results_human_mouse$scmap_cluster_labs,
+    plot_height = 400,
+    colors = scmap_colors_human_mouse
+  )
+)
+
+
+webshot2::webshot(url = "/home/mhassan/R_Projects/scAtlas/scMAP/scmap_MouseHumanresults_matching_orthologs.html",
+                  file = "/home/mhassan/R_Projects/scAtlas/scMAP/scmap_MouseHumanresults_matching_orthologs.pdf")
+
+
+df <- as.data.frame(scmapCluster_results_human_mouse)
+df %>% writexl::write_xlsx("R_Projects/scAtlas/scMAP/scmap_similarity_df_matched_orthologs.xlsx")
+
+save.image("R_Projects/scAtlas/scMAP_matched_murine_orthologs_for_paper.Rdata")
