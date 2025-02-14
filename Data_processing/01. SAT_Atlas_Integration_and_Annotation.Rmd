@@ -1,0 +1,351 @@
+---
+title: "scAtlas SAT Integration and annotation"
+date: "`r format(Sys.time(),  '%d %B %Y')`"
+author: "Mohamed Hassan"
+output: 
+  html_notebook:
+    theme: cerulean
+    toc: true  
+    toc_depth: 3
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# 1. Reading the Big object
+
+
+```{r}
+All_Data_Atlas <- readRDS(file="../All_Data_Atlas.RDS")
+All_Data_Atlas
+```
+
+## Adding a column combining the study and technology (Will be used for integration)
+```{r}
+All_Data_Atlas$Study_chemistry <- str_c(All_Data_Atlas$Study,
+                                        All_Data_Atlas$Chemistry, sep = "_")
+```
+
+```{r}
+DefaultAssay(All_Data_Atlas)<- "RNA"
+```
+
+## Adding Cell cycle score
+```{r}
+library("RCurl")
+library(AnnotationHub)
+
+cc_file <- getURL("https://raw.githubusercontent.com/hbc/tinyatlas/master/cell_cycle/Homo_sapiens.csv") 
+cell_cycle_genes <- read.csv(text = cc_file)
+
+
+# Connect to AnnotationHub
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism
+ahDb <- query(ah, 
+              pattern = c("Homo sapiens", "EnsDb"), 
+              ignore.case = TRUE)
+
+# Acquire the latest annotation files
+id <- ahDb %>%
+        mcols() %>%
+        rownames() %>%
+        tail(n = 1)
+
+# Download the appropriate Ensembldb database
+edb <- ah[[id]]
+
+# Extract gene-level information from database
+annotations <- genes(edb, 
+                     return.type = "data.frame")
+
+# Select annotations of interest
+annotations <- annotations %>%
+        dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+
+
+
+# Get gene names for Ensembl IDs for each gene
+cell_cycle_markers <- dplyr::left_join(cell_cycle_genes, annotations, by = c("geneID" = "gene_id"))
+
+# Acquire the S phase genes
+s_genes <- cell_cycle_markers %>%
+        dplyr::filter(phase == "S") %>%
+        pull("gene_name")
+        
+# Acquire the G2M phase genes        
+g2m_genes <- cell_cycle_markers %>%
+        dplyr::filter(phase == "G2/M") %>%
+        pull("gene_name")
+
+All_Data_Atlas <- CellCycleScoring(All_Data_Atlas, 
+                                   s.features = s_genes, 
+                                   g2m.features = g2m_genes)
+```
+
+
+
+## Quality check
+```{r, fig.width=10, fig.height=10}
+VlnPlot(All_Data_Atlas,features = c("nCount_RNA", "nFeature_RNA"), group.by ="Study_chemistry", pt.size = 0) + NoLegend()
+```
+
+```{r, fig.height=7, fig.width=12}
+FeatureScatter(All_Data_Atlas, 
+               feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "Study")
+```
+
+```{r}
+All_Data_Atlas_unfiltered <- All_Data_Atlas
+```
+
+
+All_Data_Atlas_unfiltered
+All_Data_Atlas <- subset(All_Data_Atlas, 
+                         nCount_RNA < 60000 & nFeature_RNA < 10000)
+All_Data_Atlas
+```
+
+# 2. Data Processing
+```{r}
+DefaultAssay(All_Data_Atlas)<- "RNA"
+All_Data_Atlas <- NormalizeData(All_Data_Atlas, normalization.method = "LogNormalize", 
+                                scale.factor = 10000)
+All_Data_Atlas <-  FindVariableFeatures(All_Data_Atlas, selection.method = "vst", 
+                                        nfeatures = 2000)
+All_Data_Atlas <-  ScaleData(All_Data_Atlas, vars.to.regress =  "nCount_RNA")
+```
+
+
+```{r}
+All_Data_Atlas <-  RunPCA(All_Data_Atlas, features = VariableFeatures(object = All_Data_Atlas), ndims.print = 1:40)
+```
+
+
+```{r}
+ElbowPlot(All_Data_Atlas, ndims = 50)
+
+### Determining the number of significant PCs
+pct <- All_Data_Atlas@reductions$pca@stdev / sum(All_Data_Atlas@reductions$pca@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct) -1] - pct[2:length(pct)]) > 0.05), decreasing = T)[1] + 1
+pcs = min(co1, co2)
+sig_pcs <- 1:pcs
+```
+
+
+```{r}
+All_Data_Atlas <- FindNeighbors(All_Data_Atlas, 
+                                          reduction = "pca", dims = sig_pcs)
+
+
+All_Data_Atlas <- RunUMAP(All_Data_Atlas, dims = sig_pcs)
+
+UMAPPlot(All_Data_Atlas, label = T, 
+         group.by = c("Study", "technology", "orig.ident",
+                      "Chemistry", "Study_chemistry", "Condition", "Phase"), 
+         raster = F) + NoLegend()
+```
+
+
+# 3. Integration (Removing batch effect)
+```{r}
+All_Data_Atlas$orig.ident <- as.factor(All_Data_Atlas$orig.ident)
+
+## Adding samples column for integration
+All_Data_Atlas$samples<- as.character(All_Data_Atlas$orig.ident)
+
+# Running the integration with Harmony
+Atlas_IntegratedObj <- RunHarmony(All_Data_Atlas, 
+                             group.by.vars= c("samples", "Study_chemistry"), 
+                             verbose = T, assay.use= "RNA", max.iter.harmony = 100)
+
+ElbowPlot(Atlas_IntegratedObj, reduction =  "pca", ndims = 50) +  ElbowPlot(Atlas_IntegratedObj, reduction =  "harmony", ndims = 50)
+
+
+### Determining the number of significant PCs
+pct <- Atlas_IntegratedObj@reductions$harmony@stdev / sum(Atlas_IntegratedObj@reductions$harmony@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct) -1] - pct[2:length(pct)]) > 0.05), decreasing = T)[1] + 1
+pcs = min(co1, co2)
+harmony_sig_pcs <- 1:pcs
+```
+
+
+```{r}
+Atlas_IntegratedObj <- RunUMAP(Atlas_IntegratedObj, dims = harmony_sig_pcs,reduction = "harmony", verbose = T)
+```
+
+
+## Checking the quality of integration
+```{r}
+UMAPPlot(Atlas_IntegratedObj, group.by = "Study", raster= F)
+UMAPPlot(Atlas_IntegratedObj, group.by = "technology", raster= F)
+UMAPPlot(Atlas_IntegratedObj, group.by = "Study_chemistry", raster= F)
+UMAPPlot(Atlas_IntegratedObj, group.by = "orig.ident", raster= F) + NoLegend()
+```
+
+
+```{r}
+# UMAP split by study
+DimPlot(Atlas_IntegratedObj, split.by ="Study",group.by= "orig.ident", raster = F,
+       label = T, repel = F, ncol = 4) & NoLegend()
+```
+
+
+
+```{r}
+Atlas_IntegratedObj<- FindNeighbors(Atlas_IntegratedObj, dims = harmony_sig_pcs, 
+                                    reduction = "harmony", verbose = FALSE)
+res <- seq(0.1, 3, by=0.1)
+Atlas_IntegratedObj <- FindClusters(Atlas_IntegratedObj, verbose = FALSE, resolution = res)
+```
+
+
+## Selecting optimal resolution based on clustree
+```{r, eval=FALSE}
+library(clustree)
+Clustree_Plot <- clustree::clustree(Atlas_IntegratedObj)
+Clustree_Plot
+```
+
+
+```{r}
+DimPlot(Atlas_IntegratedObj,  split.by = "Condition", ncol = 3 ,raster =F,label=T)
+```
+
+```{r}
+DimPlot(Atlas_IntegratedObj,  group.by = "Condition",raster =F)
+```
+
+
+
+# Cluster Annotation
+```{r}
+Idents(Atlas_IntegratedObj) <- Atlas_IntegratedObj$RNA_snn_res.0.1
+
+All_Atlas_markers <- FindAllMarkers(Atlas_IntegratedObj, 
+                              only.pos = T, 
+                              min.pct = 0.15, 
+                              logfc.threshold = 0.3)
+
+
+All_Atlas_sig_markers <- All_Atlas_markers %>% dplyr::filter(p_val_adj < 0.05)
+
+
+Atlas_IntegratedObj_test_high_res <- Atlas_IntegratedObj
+```
+
+
+## Subclustering cluster 5 at resolution 0.1
+```{r}
+subclustering5 <- FindSubCluster(object = Atlas_IntegratedObj_test_high_res, 
+                                 cluster = "5", 
+                                 graph.name = "RNA_snn", subcluster.name = "Subcluster5",
+                                 resolution = 1, algorithm = 1)
+```
+
+
+
+## Running marker genes
+```{r}
+DefaultAssay(subclustering5) <- "RNA"
+Idents(subclustering5) <- subclustering5$Subcluster5
+
+Atlas_markers <- FindAllMarkers(subclustering5,
+                              only.pos = T,
+                              min.pct = 0.15, 
+                              logfc.threshold = 0.3)
+
+top50 <- Atlas_markers %>% group_by(cluster) %>% slice_max(n = 50, order_by = avg_log2FC)
+top100 <- Atlas_markers %>% group_by(cluster) %>% slice_max(n = 100, order_by = avg_log2FC)
+
+library(writexl)
+write_xlsx(as.data.frame(Atlas_markers),
+                    "markers/markers_Atlas_WRST_15PCT_Log03_recovered_res01_cluster5_subclustered.xlsx")
+```
+
+
+## Final annotation
+```{r}
+new_names = c(
+  '0'='ASPCs', 
+  '1'='Macrophages and Monocytes', 
+  '2'='T and NK cells', 
+  '3'='Endothelial cells',
+  '4'='Adipocytes', 
+  '5_0'='Endothelial cells', '5_1'='Endothelial cells',
+  '5_2'='Endothelial cells', '5_3'='Endothelial cells', 
+  '5_4'='Endothelial cells', '5_5'='Endothelial cells', 
+  '5_6'='Endothelial cells', '5_7'='Endothelial cells', 
+  '5_8'='Endothelial cells', '5_9'='Endothelial cells', 
+  '5_10'='ASPCs', '5_11'='Endothelial cells', 
+  '5_12'='Endothelial cells', '5_13'='Endothelial cells', 
+  '5_14'='ASPCs', '5_15'='Endothelial cells', 
+  '5_16'='Endothelial cells', '5_17'='Macrophages and Monocytes', 
+  '5_18'='Adipocytes', '5_19'='Endothelial cells', 
+  '5_20'='Endothelial cells', '5_21'='Endothelial cells', 
+  '6'='Mural cells', 
+  '7'='Macrophages and Monocytes', 
+  '8'='Mast cells', 
+  '9'='B cells', 
+  '10'='Adipocytes', 
+  '11'='Lymphatic Endothelial cells')
+
+Idents(Atlas_IntegratedObj) <- Atlas_IntegratedObj$Subcluster5
+
+Atlas_IntegratedObj$final_annotation <- recode(Idents(Atlas_IntegratedObj),
+                                                 !!!new_names)
+```
+
+
+```{r}
+DimPlot(Atlas_IntegratedObj, group.by = "final_annotation", label = T, raster = F)
+```
+
+
+
+
+
+## Running marker genes
+```{r}
+DefaultAssay(Atlas_IntegratedObj) <- "RNA"
+Idents(Atlas_IntegratedObj) <- Atlas_IntegratedObj$final_annotation
+
+Atlas_markers <- FindAllMarkers(Atlas_IntegratedObj,
+                              only.pos = T,
+                              min.pct = 0.15, 
+                              logfc.threshold = 0.3)
+
+top50 <- Atlas_markers %>% group_by(cluster) %>% slice_max(n = 50, order_by = avg_log2FC)
+top100 <- Atlas_markers %>% group_by(cluster) %>% slice_max(n = 100, order_by = avg_log2FC)
+
+library(writexl)
+write_xlsx(as.data.frame(Atlas_markers),
+                    "markers/markers_Atlas_WRST_15PCT_Log03_res01_cluster5_subclustered_annotated_final4paper.xlsx")
+```
+
+
+
+```{r}
+genes <- ggplot(Atlas_IntegratedObj@meta.data, aes(x=final_annotation, y=nFeature_RNA,fill=final_annotation)) + 
+  geom_violin(trim=FALSE,scale="width") +
+  geom_boxplot(width=0.1, fill="white",outlier.shape = NA) +
+  labs(x="", y = "Genes") + theme_classic() + 
+  theme (legend.position="none") + scale_fill_manual(values = bigobj_cluster_cols)+ theme(axis.text = element_text(size=15)) + ylab("")
+
+genes
+ggsave("Plots/nGenes_final_annotation_updated_colors.pdf", device="pdf",units="cm",width=52, height=15)
+```
+
+```{r}
+UMIs <- ggplot(Atlas_IntegratedObj@meta.data, aes(x=final_annotation, y=nCount_RNA,fill=final_annotation)) +
+  geom_violin(trim=FALSE,scale="width") +
+  geom_boxplot(width=0.1, fill="white",outlier.shape = NA)+
+  labs(x="", y = "UMIs") + theme_classic() + theme (legend.position="none") + scale_fill_manual(values = bigobj_cluster_cols)+ theme(axis.text = element_text(size=15)) + ylab("")# + scale_y_log10()
+UMIs
+ggsave("Plots/nUMIs_final_annotation_updated_colors.pdf", device="pdf",units="cm",width=52, height=15)
+```
